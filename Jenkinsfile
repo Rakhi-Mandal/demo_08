@@ -1,5 +1,4 @@
 pipeline {
- 
     agent any
  
     options {
@@ -7,7 +6,6 @@ pipeline {
     }
  
     parameters {
- 
         choice(
             name: 'EXECUTION_MODE',
             choices: ['suite', 'spec'],
@@ -35,13 +33,13 @@ pipeline {
         string(
             name: 'WORKERS',
             defaultValue: '4',
-            description: 'Number of parallel workers'
+            description: 'Number of parallel workers (only used when EXECUTION=parallel)'
         )
  
         string(
             name: 'TARGET',
             defaultValue: 'regression',
-            description: 'For suite mode use sanity/regression. For spec mode provide spec path.'
+            description: 'For suite mode use sanity or regression. For spec mode use a spec path like regression/test_kortis_01.spec.js'
         )
     }
  
@@ -54,35 +52,34 @@ pipeline {
             }
         }
  
-        stage('Environment Check') {
+        stage('Install') {
             steps {
-                sh '''
-                    set -e
+                script {
+                    if (isUnix()) {
+                        pwsh '''
+                            $ErrorActionPreference = "Stop"
  
-                    echo "===== Environment ====="
+                            Write-Host "Running on Linux"
  
-                    node --version
-                    npm --version
-                    git --version
-                    playwright --version
-                    google-chrome --version
-                    allure --version
+                            node --version
+                            npm --version
  
-                    echo "======================="
-                '''
-            }
-        }
+                            npm ci
+                        '''
+                    } else {
+                        powershell '''
+                            $ErrorActionPreference = "Stop"
  
-        stage('Install Dependencies') {
-            steps {
-                sh '''
-                    set -e
+                            Write-Host "Running on Windows"
  
-                    npm ci
+                            node --version
+                            npm --version
  
-                    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright/ms-playwright \
-                    npx playwright install --with-deps
-                '''
+                            npm ci
+                            npx playwright install
+                        '''
+                    }
+                }
             }
         }
  
@@ -91,9 +88,7 @@ pipeline {
                 script {
  
                     def headedArg = params.HEADED ? '--headed' : ''
- 
                     def browserArg = "--project=${params.BROWSER}"
- 
                     def workersArg = params.EXECUTION == 'sequential'
                         ? '--workers=1'
                         : "--workers=${params.WORKERS.trim()}"
@@ -110,25 +105,27 @@ pipeline {
                         command += " ${headedArg}"
                     }
  
-                    echo "======================================"
-                    echo "EXECUTION MODE : ${params.EXECUTION_MODE}"
-                    echo "TARGET         : ${target}"
-                    echo "BROWSER        : ${params.BROWSER}"
-                    echo "HEADED         : ${params.HEADED}"
-                    echo "EXECUTION      : ${params.EXECUTION}"
-                    echo "WORKERS        : ${params.WORKERS}"
-                    echo "COMMAND        : ${command}"
-                    echo "======================================"
+                    echo "==================================="
+                    echo "OS: ${isUnix() ? 'Linux' : 'Windows'}"
+                    echo "HEADED: ${params.HEADED}"
+                    echo "EXECUTION: ${params.EXECUTION}"
+                    echo "WORKERS: ${params.WORKERS}"
+                    echo "FINAL COMMAND: ${command}"
+                    echo "==================================="
  
                     catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
  
-                        sh """
-                            set -e
- 
-                            PLAYWRIGHT_BROWSERS_PATH=/opt/playwright/ms-playwright
- 
-                            ${command}
-                        """
+                        if (isUnix()) {
+                            pwsh """
+                                \$ErrorActionPreference = 'Stop'
+                                ${command}
+                            """
+                        } else {
+                            powershell """
+                                \$ErrorActionPreference = 'Stop'
+                                ${command}
+                            """
+                        }
                     }
                 }
             }
@@ -136,19 +133,34 @@ pipeline {
  
         stage('Generate Allure Report') {
             steps {
-                sh '''
-                    set -e
+                script {
  
-                    if [ -d "allure-results" ]; then
-                        allure generate allure-results \
-                            -o allure-report \
-                            --clean
+                    if (isUnix()) {
+                        pwsh '''
+                            $ErrorActionPreference = "Stop"
  
-                        echo "Allure report generated."
-                    else
-                        echo "No allure-results directory found."
-                    fi
-                '''
+                            if (Test-Path "allure-results") {
+                                npx -p allure-commandline allure generate allure-results -o allure-report --clean
+                                Write-Host "Allure report generated."
+                            }
+                            else {
+                                Write-Host "No allure-results directory found."
+                            }
+                        '''
+                    } else {
+                        powershell '''
+                            $ErrorActionPreference = "Stop"
+ 
+                            if (Test-Path "allure-results") {
+                                npx -p allure-commandline allure generate allure-results -o allure-report --clean
+                                Write-Host "Allure report generated."
+                            }
+                            else {
+                                Write-Host "No allure-results directory found."
+                            }
+                        '''
+                    }
+                }
             }
         }
  
@@ -158,7 +170,6 @@ pipeline {
                     fileExists('allure-results')
                 }
             }
- 
             steps {
                 allure(
                     includeProperties: false,
@@ -170,9 +181,7 @@ pipeline {
     }
  
     post {
- 
         always {
- 
             archiveArtifacts(
                 artifacts: 'test-results/**,playwright-report/**,allure-results/**,allure-report/**',
                 allowEmptyArchive: true
